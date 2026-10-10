@@ -28,9 +28,13 @@ EMPTY_PROFILE = {
 
 # ================= Claude helpers =================
 
-def ask_claude(prompt, max_tokens):
+def ask_claude(prompt, max_tokens, images=None):
+    content = prompt
+    if images:
+        content = [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img}}
+                   for img in images] + [{"type": "text", "text": prompt}]
     msg = client.messages.create(model=MODEL, max_tokens=max_tokens,
-                                 messages=[{"role": "user", "content": prompt}])
+                                 messages=[{"role": "user", "content": content}])
     text = msg.content[0].text.strip().replace("```json", "").replace("```", "").strip()
     return json.loads(text)
 
@@ -54,13 +58,16 @@ def normalize(profile):
     return p
 
 
-def parse_resume(resume_text):
+def parse_resume(resume_text="", images=None):
+    if images:
+        source = ("The images above are screenshots of this person's resume or LinkedIn profile. "
+                  "Read all of them together. Ignore app buttons, menus, ads, and other people's names.")
+    else:
+        source = f"<resume>\n{resume_text}\n</resume>"
     prompt = f"""Convert this resume into JSON. Copy every bullet WORD FOR WORD.
 Do not rewrite, improve, or invent anything. If a field is missing, use "" or [].
 
-<resume>
-{resume_text}
-</resume>
+{source}
 
 Respond with only JSON in this exact shape:
 {{"contact": {{"name": "", "email": "", "phone": "", "location": "", "linkedin": "", "github": "", "website": ""}},
@@ -73,7 +80,7 @@ Respond with only JSON in this exact shape:
  "affiliations": [{{"name": ""}}],
  "leadership": [{{"text": ""}}]}}
 """
-    return normalize(ask_claude(prompt, 4000))
+    return normalize(ask_claude(prompt, 4000, images))
 
 
 def build_catalog(profile):
@@ -149,6 +156,20 @@ def read_upload(file):
         from docx import Document
         return "\n".join(p.text for p in Document(file).paragraphs)
     return file.read().decode("utf-8", errors="ignore")
+
+
+def prepare_images(files):
+    """Shrink phone screenshots so they upload fast and fit Claude's limits."""
+    import base64
+    from PIL import Image
+    out = []
+    for f in files:
+        img = Image.open(f).convert("RGB")
+        img.thumbnail((1568, 1568))
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        out.append(base64.b64encode(buf.getvalue()).decode())
+    return out
 
 
 def fetch_job_from_link():
@@ -378,34 +399,49 @@ if ss["step"] == 1:
     st.header("1. Tell us about you")
     name = st.text_input("Your full name")
     method = st.radio("How do you want to add your experience?",
-                      ["Upload my resume", "Paste my resume or LinkedIn", "Type it in myself"])
+                      ["Upload my resume (PDF or Word)", "Upload screenshots (easiest on a phone)",
+                       "Paste text", "Type it in myself"])
 
-    source_text = ""
-    if method == "Upload my resume":
-        st.caption("Tip: from LinkedIn, open your profile, click More, then Save to PDF. Upload that file here.")
+    source_text, shots = "", []
+    if method == "Upload my resume (PDF or Word)":
+        st.caption("On a computer, you can also use LinkedIn: open your profile, click More, then Save to PDF.")
         up = st.file_uploader("PDF, Word (.docx), or text file", type=["pdf", "docx", "txt"])
         if up is not None:
             try:
                 source_text = read_upload(up)
                 if len(source_text.strip()) < 50:
-                    st.warning("I couldn't read much text. It may be a scanned image. Try pasting instead.")
+                    st.warning("I couldn't read much text. It may be a scanned image. Try screenshots instead.")
             except Exception:
-                st.warning("I couldn't read that file. Try pasting instead.")
-    elif method == "Paste my resume or LinkedIn":
-        source_text = st.text_area("Paste everything, even old bullets. More to pick from means a better fit.",
+                st.warning("I couldn't read that file. Try screenshots or pasting instead.")
+    elif method == "Upload screenshots (easiest on a phone)":
+        st.caption("Screenshot your LinkedIn profile or resume. Scroll and take a few, so every job is "
+                   "included. Open each job's 'see more' first. Up to 8 images.")
+        shots = st.file_uploader("Screenshots (PNG or JPG)", type=["png", "jpg", "jpeg", "webp"],
+                                 accept_multiple_files=True) or []
+        if len(shots) > 8:
+            st.warning("Please upload 8 screenshots or fewer.")
+        elif shots:
+            st.success(f"{len(shots)} screenshot(s) ready.")
+    elif method == "Paste text":
+        source_text = st.text_area("Paste your resume or LinkedIn text. Include everything, even old bullets.",
                                    height=280)
     else:
         st.info("You'll fill in your experience on the next screen.")
 
     if st.button("Continue", type="primary"):
+        has_input = (method == "Type it in myself" or len(source_text.strip()) >= 50
+                     or 0 < len(shots) <= 8)
         if not name.strip():
             st.warning("Please add your name.")
-        elif method != "Type it in myself" and len(source_text.strip()) < 50:
+        elif not has_input:
             st.warning("Please upload or paste your resume first.")
         else:
             try:
                 if method == "Type it in myself":
                     profile = normalize({})
+                elif shots:
+                    with st.spinner("Reading your screenshots..."):
+                        profile = parse_resume(images=prepare_images(shots))
                 else:
                     with st.spinner("Reading your resume..."):
                         profile = parse_resume(source_text)

@@ -582,7 +582,8 @@ elif ss["step"] == 2:
 # ---------- Step 3: Job ----------
 elif ss["step"] == 3:
     st.header("3. The job")
-    st.text_input("Job posting link", key="job_url", placeholder="https://...")
+    st.text_input("Job posting link (add it so you can apply right after)", key="job_url",
+                  placeholder="https://...")
     st.button("Get job from link", on_click=fetch_job_from_link)
     if ss["fetch_msg"] == "ok":
         st.success("Got it. Check the text below and trim anything that isn't the job description.")
@@ -600,6 +601,7 @@ elif ss["step"] == 3:
                     _, catalog_text = build_catalog(ss["profile"])
                     result = tailor(ss["profile"], catalog_text, ss["job_text"])
                 ss["result"] = result
+                ss["apply_url"] = str(ss.get("job_url", "")).strip()
                 ss["sel_bullets"] = result.get("bullet_ids", [])
                 ss["sel_skills"] = [s for s in result.get("skills_to_highlight", []) if s in all_skills(ss["profile"])]
                 go(4)
@@ -640,9 +642,17 @@ elif ss["step"] == 4:
     st.download_button("Download PDF", pdf_bytes, file_name=f"{name}_tailored.pdf",
                        mime="application/pdf", type="primary", width="stretch")
 
+    apply_url = ss.get("apply_url", "")
+    if apply_url:
+        if not apply_url.startswith("http"):
+            apply_url = "https://" + apply_url
+        st.link_button("Go to the job and apply", apply_url, width="stretch")
+    st.caption("Applying on your phone? Download first. When the job asks for a resume, tap upload. "
+               "iPhone: look in Files, then Downloads. Android: look in Downloads.")
+
     b1 = b2 = b3 = st
     if b1.button("Tailor for another job", width="stretch"):
-        ss["job_text"], ss["job_url"], ss["fetch_msg"] = "", "", ""
+        ss["job_text"], ss["job_url"], ss["fetch_msg"], ss["apply_url"] = "", "", "", ""
         go(3)
         st.rerun()
     if b2.button("Edit my info", width="stretch"):

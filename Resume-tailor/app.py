@@ -379,10 +379,14 @@ ss.setdefault("profile", None)
 ss.setdefault("result", None)
 ss.setdefault("job_text", "")
 ss.setdefault("fetch_msg", "")
+ss.setdefault("draft", None)
+ss.setdefault("uid", 0)
+ss.setdefault("scroll_top", False)
 
 
 def go(step):
     ss["step"] = step
+    ss["scroll_top"] = True
 
 
 def start_over():
@@ -390,139 +394,190 @@ def start_over():
         del ss[k]
 
 
+def new_id():
+    ss["uid"] += 1
+    return ss["uid"]
+
+
+def make_draft(p):
+    return {
+        "exp": [{**e, "_id": new_id()} for e in p["experience"]],
+        "proj": [{**x, "_id": new_id()} for x in p["projects"]],
+        "edu": [{**e, "_id": new_id()} for e in p["education"]],
+    }
+
+
+# Jump to the top of the page whenever the step changes (helps a lot on phones).
+if ss["scroll_top"]:
+    js = """<script>
+      ['[data-testid="stMain"]', 'section.main', '[data-testid="stAppViewContainer"]']
+        .forEach(sel => { const el = document.querySelector(sel); if (el) el.scrollTo(0, 0); });
+      window.scrollTo(0, 0);
+    </script>"""
+    try:
+        st.html(js, unsafe_allow_javascript=True)
+    except TypeError:
+        pass
+    ss["scroll_top"] = False
+
 st.title("Resume Tailor")
-st.caption("Tailor your resume to any job, using only your real experience. V1 test. Nothing is saved.")
+st.caption("Tailor your resume to any job, using only your real experience.")
 st.progress(ss["step"] / 4, text=["You", "Review", "Job", "Preview"][ss["step"] - 1] + f"  ·  Step {ss['step']} of 4")
 
 # ---------- Step 1: You ----------
 if ss["step"] == 1:
     st.header("1. Tell us about you")
     name = st.text_input("Your full name")
-    method = st.radio("How do you want to add your experience?",
-                      ["Upload my resume (PDF or Word)", "Upload screenshots (easiest on a phone)",
-                       "Paste text", "Type it in myself"])
+    method = st.radio("Add your experience", ["Upload my resume", "Upload screenshots"],
+                      captions=["PDF or Word file", "Easiest on a phone. Screenshot your LinkedIn or resume."])
 
     source_text, shots = "", []
-    if method == "Upload my resume (PDF or Word)":
-        st.caption("On a computer, you can also use LinkedIn: open your profile, click More, then Save to PDF.")
-        up = st.file_uploader("PDF, Word (.docx), or text file", type=["pdf", "docx", "txt"])
+    if method == "Upload my resume":
+        up = st.file_uploader("PDF or Word file", type=["pdf", "docx", "txt"], label_visibility="collapsed")
         if up is not None:
             try:
                 source_text = read_upload(up)
                 if len(source_text.strip()) < 50:
-                    st.warning("I couldn't read much text. It may be a scanned image. Try screenshots instead.")
+                    st.warning("I couldn't read that file. Try screenshots instead.")
             except Exception:
-                st.warning("I couldn't read that file. Try screenshots or pasting instead.")
-    elif method == "Upload screenshots (easiest on a phone)":
-        st.caption("Screenshot your LinkedIn profile or resume. Scroll and take a few, so every job is "
-                   "included. Open each job's 'see more' first. Up to 8 images.")
-        shots = st.file_uploader("Screenshots (PNG or JPG)", type=["png", "jpg", "jpeg", "webp"],
-                                 accept_multiple_files=True) or []
+                st.warning("I couldn't read that file. Try screenshots instead.")
+    else:
+        st.caption("Open each job's 'see more' first, then scroll and screenshot. Up to 8.")
+        shots = st.file_uploader("Screenshots", type=["png", "jpg", "jpeg", "webp"],
+                                 accept_multiple_files=True, label_visibility="collapsed") or []
         if len(shots) > 8:
             st.warning("Please upload 8 screenshots or fewer.")
-        elif shots:
-            st.success(f"{len(shots)} screenshot(s) ready.")
-    elif method == "Paste text":
-        source_text = st.text_area("Paste your resume or LinkedIn text. Include everything, even old bullets.",
-                                   height=280)
-    else:
-        st.info("You'll fill in your experience on the next screen.")
 
-    if st.button("Continue", type="primary"):
-        has_input = (method == "Type it in myself" or len(source_text.strip()) >= 50
-                     or 0 < len(shots) <= 8)
+    if st.button("Continue", type="primary", width="stretch"):
+        has_input = len(source_text.strip()) >= 50 or 0 < len(shots) <= 8
         if not name.strip():
             st.warning("Please add your name.")
         elif not has_input:
-            st.warning("Please upload or paste your resume first.")
+            st.warning("Please upload your resume or screenshots first.")
         else:
             try:
-                if method == "Type it in myself":
-                    profile = normalize({})
-                elif shots:
-                    with st.spinner("Reading your screenshots..."):
-                        profile = parse_resume(images=prepare_images(shots))
-                else:
-                    with st.spinner("Reading your resume..."):
-                        profile = parse_resume(source_text)
+                with st.spinner("Reading your experience..."):
+                    profile = parse_resume(images=prepare_images(shots)) if shots else parse_resume(source_text)
                 profile["contact"]["name"] = name.strip()
-                ss["profile"] = profile
+                ss["profile"], ss["draft"] = profile, None
                 go(2)
                 st.rerun()
             except Exception as e:
-                st.error("Something went wrong reading your resume. Please try again.")
+                st.error("Something went wrong reading your experience. Please try again.")
                 st.caption(str(e))
 
 # ---------- Step 2: Review and edit ----------
 elif ss["step"] == 2:
     p = ss["profile"]
+    if ss["draft"] is None:
+        ss["draft"] = make_draft(p)
+    d = ss["draft"]
+
     st.header("2. Review your info")
-    st.write("Here's what we found. Fix anything that's wrong, add what's missing, delete what you don't want.")
+    st.write("Tap any section to check it. Fix, add, or remove anything.")
 
-    st.subheader("Contact")
-    c = p["contact"]
-    col1, col2 = st.columns(2)
-    contact = {
-        "name": col1.text_input("Name", c["name"]),
-        "email": col2.text_input("Email", c["email"]),
-        "phone": col1.text_input("Phone", c["phone"]),
-        "location": col2.text_input("City, State", c["location"]),
-        "linkedin": col1.text_input("LinkedIn URL", c["linkedin"]),
-        "github": col2.text_input("GitHub URL", c["github"]),
-        "website": col1.text_input("Website", c["website"]),
-    }
+    with st.expander("Contact info"):
+        c = p["contact"]
+        contact = {k: st.text_input(label, c.get(k, ""), key=f"c_{k}") for k, label in [
+            ("name", "Name"), ("email", "Email"), ("phone", "Phone"), ("location", "City, State"),
+            ("linkedin", "LinkedIn URL"), ("github", "GitHub URL"), ("website", "Website")]}
+        summary = st.text_area("Summary", next(iter(p["summaries"].values()), ""), key="c_summary")
 
-    summary = st.text_area("Summary", next(iter(p["summaries"].values()), ""), height=100)
+    def item_cards(items, kind):
+        for it in items:
+            uid = it["_id"]
+            if kind == "exp":
+                label = " at ".join(x for x in [it.get("title", ""), it.get("company", "")] if x) or "New job"
+            else:
+                label = it.get("name", "") or "New project"
+            with st.expander(label):
+                if kind == "exp":
+                    st.text_input("Job title", it.get("title", ""), key=f"{uid}_title")
+                    st.text_input("Company", it.get("company", ""), key=f"{uid}_company")
+                    st.text_input("Location", it.get("location", ""), key=f"{uid}_location")
+                else:
+                    st.text_input("Project name", it.get("name", ""), key=f"{uid}_name")
+                    st.text_input("Your role", it.get("role", ""), key=f"{uid}_role")
+                st.text_input("Dates", it.get("dates", ""), key=f"{uid}_dates")
+                st.text_area("Bullets (one per line)", "\n".join(b["text"] for b in it.get("bullets", [])),
+                             key=f"{uid}_bullets", height=160)
+                if st.button("Remove", key=f"{uid}_remove"):
+                    items.remove(it)
+                    st.rerun()
 
-    st.subheader("Experience and projects")
-    st.caption("One row per bullet. Rows with the same title and company become one job. "
-               "Click a cell to edit. Use the + at the bottom to add a row. "
-               "To delete, select a row's checkbox on the left and click the trash icon.")
-    work = st.data_editor(
-        profile_to_rows(p), num_rows="dynamic", width="stretch", hide_index=True, key="ed_work",
-        column_config={
-            "Section": st.column_config.SelectboxColumn(options=["Experience", "Project"], required=True),
-            "Bullet": st.column_config.TextColumn(width="large"),
-        })
+    st.subheader("Experience")
+    item_cards(d["exp"], "exp")
+    if st.button("+ Add a job", width="stretch"):
+        d["exp"].append({"_id": new_id(), "bullets": []})
+        st.rerun()
+
+    st.subheader("Projects")
+    item_cards(d["proj"], "proj")
+    if st.button("+ Add a project", width="stretch"):
+        d["proj"].append({"_id": new_id(), "bullets": []})
+        st.rerun()
 
     st.subheader("Education")
-    edu_df = pd.DataFrame(p["education"] or [{"degree": "", "school": "", "location": "", "graduation": ""}],
-                          columns=["degree", "school", "location", "graduation"])
-    edu = st.data_editor(edu_df, num_rows="dynamic", width="stretch", hide_index=True, key="ed_edu")
-
-    skills_text = st.text_area("Skills (separate with commas)", ", ".join(all_skills(p)))
-
-    with st.expander("Certifications, leadership, and affiliations (optional)"):
-        cert_df = pd.DataFrame(p["certifications"] or [{"name": "", "issuer": "", "date": ""}],
-                               columns=["name", "issuer", "date"])
-        certs = st.data_editor(cert_df, num_rows="dynamic", width="stretch", hide_index=True,
-                               key="ed_cert")
-        lead_text = st.text_area("Leadership (one per line)", "\n".join(l["text"] for l in p["leadership"]))
-        aff_text = st.text_area("Affiliations (one per line)", "\n".join(a["name"] for a in p["affiliations"]))
-
-    b1, b2 = st.columns(2)
-    if b1.button("Back"):
-        go(1)
+    for e in d["edu"]:
+        uid = e["_id"]
+        with st.expander(e.get("degree", "") or "New education"):
+            st.text_input("Degree", e.get("degree", ""), key=f"{uid}_degree")
+            st.text_input("School", e.get("school", ""), key=f"{uid}_school")
+            st.text_input("Location", e.get("location", ""), key=f"{uid}_elocation")
+            st.text_input("Graduation", str(e.get("graduation", "")), key=f"{uid}_grad")
+            if st.button("Remove", key=f"{uid}_eremove"):
+                d["edu"].remove(e)
+                st.rerun()
+    if st.button("+ Add education", width="stretch"):
+        d["edu"].append({"_id": new_id()})
         st.rerun()
-    if b2.button("Save and continue", type="primary"):
-        exp, proj = rows_to_items(work)
+
+    with st.expander("Skills and extras"):
+        skills_text = st.text_area("Skills (separate with commas)", ", ".join(all_skills(p)), key="x_skills")
+        cert_text = st.text_area("Certifications (one per line: Name, Issuer, Date)",
+                                 "\n".join(", ".join(x for x in [c.get("name", ""), c.get("issuer", ""),
+                                                                 c.get("date", "")] if x)
+                                           for c in p["certifications"]), key="x_certs")
+        lead_text = st.text_area("Leadership (one per line)", "\n".join(l["text"] for l in p["leadership"]),
+                                 key="x_lead")
+        aff_text = st.text_area("Affiliations (one per line)", "\n".join(a["name"] for a in p["affiliations"]),
+                                key="x_aff")
+
+    if st.button("Save and continue", type="primary", width="stretch"):
+        g = lambda key: str(ss.get(key, "")).strip()
+        exp = [{"title": g(f"{e['_id']}_title"), "company": g(f"{e['_id']}_company"),
+                "location": g(f"{e['_id']}_location"), "dates": g(f"{e['_id']}_dates"),
+                "bullets": [{"text": t} for t in lines(g(f"{e['_id']}_bullets"))]} for e in d["exp"]]
+        proj = [{"name": g(f"{x['_id']}_name"), "role": g(f"{x['_id']}_role"), "dates": g(f"{x['_id']}_dates"),
+                 "bullets": [{"text": t} for t in lines(g(f"{x['_id']}_bullets"))]} for x in d["proj"]]
+        edu = [{"degree": g(f"{e['_id']}_degree"), "school": g(f"{e['_id']}_school"),
+                "location": g(f"{e['_id']}_elocation"), "graduation": g(f"{e['_id']}_grad")} for e in d["edu"]]
+        exp = [e for e in exp if e["title"] or e["company"] or e["bullets"]]
+        proj = [x for x in proj if x["name"] or x["bullets"]]
+        edu = [e for e in edu if any(e.values())]
         if not any(x["bullets"] for x in exp + proj):
             st.warning("Add at least one bullet before continuing.")
         else:
+            certs = []
+            for line in lines(cert_text):
+                parts = [x.strip() for x in line.split(",")]
+                certs.append({"name": parts[0], "issuer": parts[1] if len(parts) > 1 else "",
+                              "date": ", ".join(parts[2:]) if len(parts) > 2 else ""})
             ss["profile"] = normalize({
                 "contact": {k: v.strip() for k, v in contact.items()},
                 "summaries": {"default": summary.strip()},
-                "experience": exp, "projects": proj,
-                "education": clean_records(edu),
-                "skills": {"all": [s.strip() for s in skills_text.split(",") if s.strip()]},
-                "certifications": clean_records(certs),
+                "experience": exp, "projects": proj, "education": edu,
+                "skills": {"all": [x.strip() for x in skills_text.split(",") if x.strip()]},
+                "certifications": certs,
                 "leadership": [{"text": t} for t in lines(lead_text)],
                 "affiliations": [{"name": t} for t in lines(aff_text)],
             })
-            for k in ["ed_work", "ed_edu", "ed_cert"]:
-                ss.pop(k, None)
+            ss["draft"] = None
             go(3)
             st.rerun()
+    if st.button("Back", width="stretch"):
+        go(1)
+        st.rerun()
 
 # ---------- Step 3: Job ----------
 elif ss["step"] == 3:
@@ -536,11 +591,7 @@ elif ss["step"] == 3:
                    "Please copy the job description and paste it below.")
     st.text_area("Job description (paste here, or it fills in from the link)", key="job_text", height=280)
 
-    b1, b2 = st.columns(2)
-    if b1.button("Back to my info"):
-        go(2)
-        st.rerun()
-    if b2.button("Tailor my resume", type="primary"):
+    if st.button("Tailor my resume", type="primary", width="stretch"):
         if len(ss["job_text"].strip()) < 100:
             st.warning("Please add the job description first.")
         else:
@@ -556,6 +607,10 @@ elif ss["step"] == 3:
             except Exception as e:
                 st.error("Something went wrong. Please try again.")
                 st.caption(str(e))
+    if st.button("Back to my info", width="stretch"):
+        ss["draft"] = None
+        go(2)
+        st.rerun()
 
 # ---------- Step 4: Preview ----------
 elif ss["step"] == 4:
@@ -585,36 +640,37 @@ elif ss["step"] == 4:
     st.download_button("Download PDF", pdf_bytes, file_name=f"{name}_tailored.pdf",
                        mime="application/pdf", type="primary", width="stretch")
 
-    b1, b2, b3 = st.columns(3)
-    if b1.button("Tailor for another job"):
+    b1 = b2 = b3 = st
+    if b1.button("Tailor for another job", width="stretch"):
         ss["job_text"], ss["job_url"], ss["fetch_msg"] = "", "", ""
         go(3)
         st.rerun()
-    if b2.button("Edit my info"):
+    if b2.button("Edit my info", width="stretch"):
+        ss["draft"] = None
         go(2)
         st.rerun()
-    if b3.button("Delete everything"):
+    if b3.button("Delete everything", width="stretch"):
         start_over()
         st.rerun()
     st.caption("Nothing is saved on our side. Download your PDF to keep it. Saving online is coming in V2.")
 
 # ================= Feedback =================
 st.divider()
-with st.form("feedback", clear_on_submit=True):
-    st.subheader("Help me improve this")
-    rating = st.radio("How useful was this?", ["Very useful", "Somewhat useful", "Not useful"], horizontal=True)
-    confused = st.text_area("What confused you?")
-    wish = st.text_area("What would you want next?")
-    who = st.text_input("Your name (optional)")
-    if st.form_submit_button("Send feedback"):
-        payload = {"rating": rating, "confused": confused, "wish": wish, "name": who, "step": ss.get("step")}
-        url = st.secrets.get("FEEDBACK_URL", "")
-        try:
-            if not url:
-                raise ValueError("no feedback url")
-            r = requests.post(url, json=payload, headers={"Accept": "application/json"}, timeout=10)
-            r.raise_for_status()
-            st.success("Thank you! Your feedback was sent to Tessy.")
-        except Exception:
-            st.warning("Couldn't send it automatically. Please copy this and send it to Tessy:")
-            st.code(json.dumps(payload, indent=2))
+with st.expander("💬 Share feedback with Tessy"):
+    with st.form("feedback", clear_on_submit=True):
+        rating = st.radio("How useful was this?", ["Very useful", "Somewhat useful", "Not useful"], horizontal=True)
+        confused = st.text_area("What confused you?")
+        wish = st.text_area("What would you want next?")
+        who = st.text_input("Your name (optional)")
+        if st.form_submit_button("Send feedback", width="stretch"):
+            payload = {"rating": rating, "confused": confused, "wish": wish, "name": who, "step": ss.get("step")}
+            url = st.secrets.get("FEEDBACK_URL", "")
+            try:
+                if not url:
+                    raise ValueError("no feedback url")
+                r = requests.post(url, json=payload, headers={"Accept": "application/json"}, timeout=10)
+                r.raise_for_status()
+                st.success("Thank you! Your feedback was sent to Tessy.")
+            except Exception:
+                st.warning("Couldn't send it automatically. Please copy this and send it to Tessy:")
+                st.code(json.dumps(payload, indent=2))

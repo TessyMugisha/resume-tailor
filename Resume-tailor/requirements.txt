@@ -1,0 +1,5 @@
+streamlit
+anthropic
+reportlab
+pypdf
+python-docx

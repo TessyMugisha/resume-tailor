@@ -428,23 +428,22 @@ st.progress(ss["step"] / 4, text=["You", "Review", "Job", "Preview"][ss["step"] 
 if ss["step"] == 1:
     st.header("1. Tell us about you")
     name = st.text_input("Your full name")
-    method = st.radio("Add your experience", ["Upload my resume", "Upload screenshots"],
-                      captions=["PDF or Word file", "Easiest on a phone. Screenshot your LinkedIn or resume."])
 
+    st.subheader("Upload your resume")
     source_text, shots = "", []
-    if method == "Upload my resume":
-        up = st.file_uploader("PDF or Word file", type=["pdf", "docx", "txt"], label_visibility="collapsed")
-        if up is not None:
-            try:
-                source_text = read_upload(up)
-                if len(source_text.strip()) < 50:
-                    st.warning("I couldn't read that file. Try screenshots instead.")
-            except Exception:
-                st.warning("I couldn't read that file. Try screenshots instead.")
-    else:
-        st.caption("Open each job's 'see more' first, then scroll and screenshot. Up to 8.")
+    up = st.file_uploader("PDF or Word file", type=["pdf", "docx", "txt"])
+    if up is not None:
+        try:
+            source_text = read_upload(up)
+            if len(source_text.strip()) < 50:
+                st.warning("I couldn't read that file. Try screenshots below instead.")
+        except Exception:
+            st.warning("I couldn't read that file. Try screenshots below instead.")
+
+    with st.expander("On a phone? Upload screenshots instead"):
+        st.caption("Screenshot your LinkedIn profile or resume. Open each job's 'see more' first. Up to 8.")
         shots = st.file_uploader("Screenshots", type=["png", "jpg", "jpeg", "webp"],
-                                 accept_multiple_files=True, label_visibility="collapsed") or []
+                                 accept_multiple_files=True) or []
         if len(shots) > 8:
             st.warning("Please upload 8 screenshots or fewer.")
 
@@ -466,6 +465,16 @@ if ss["step"] == 1:
                 st.error("Something went wrong reading your experience. Please try again.")
                 st.caption(str(e))
 
+    if st.button("No resume? Type it in yourself", type="tertiary"):
+        if not name.strip():
+            st.warning("Please add your name first.")
+        else:
+            profile = normalize({})
+            profile["contact"]["name"] = name.strip()
+            ss["profile"], ss["draft"] = profile, None
+            go(2)
+            st.rerun()
+
 # ---------- Step 2: Review and edit ----------
 elif ss["step"] == 2:
     p = ss["profile"]
@@ -474,7 +483,15 @@ elif ss["step"] == 2:
     d = ss["draft"]
 
     st.header("2. Review your info")
-    st.write("Tap any section to check it. Fix, add, or remove anything.")
+    n_bullets = sum(len(x.get("bullets", [])) for x in d["exp"] + d["proj"])
+    if n_bullets:
+        plural = lambda n, w: f"{n} {w}" + ("" if n == 1 else "s")
+        st.success(f"Found {plural(len(d['exp']), 'job')}, {plural(len(d['proj']), 'project')}, "
+                   f"and {plural(n_bullets, 'bullet')}.")
+        st.write("Look right? Continue. Need a fix? Tap any section below.")
+    else:
+        st.write("Add your jobs and projects below.")
+    top_save = st.button("Looks good, continue", type="primary", width="stretch", key="top_save")
 
     with st.expander("Contact info"):
         c = p["contact"]
@@ -543,7 +560,8 @@ elif ss["step"] == 2:
         aff_text = st.text_area("Affiliations (one per line)", "\n".join(a["name"] for a in p["affiliations"]),
                                 key="x_aff")
 
-    if st.button("Save and continue", type="primary", width="stretch"):
+    bottom_save = st.button("Save and continue", type="primary", width="stretch", key="bottom_save")
+    if top_save or bottom_save:
         g = lambda key: str(ss.get(key, "")).strip()
         exp = [{"title": g(f"{e['_id']}_title"), "company": g(f"{e['_id']}_company"),
                 "location": g(f"{e['_id']}_location"), "dates": g(f"{e['_id']}_dates"),
@@ -557,6 +575,7 @@ elif ss["step"] == 2:
         edu = [e for e in edu if any(e.values())]
         if not any(x["bullets"] for x in exp + proj):
             st.warning("Add at least one bullet before continuing.")
+            st.toast("Add at least one bullet before continuing.")
         else:
             certs = []
             for line in lines(cert_text):

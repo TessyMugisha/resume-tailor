@@ -1,5 +1,9 @@
-streamlit
+streamlit>=1.40
 anthropic
 reportlab
 pypdf
 python-docx
+pypdfium2
+pandas
+requests
+beautifulsoup4
